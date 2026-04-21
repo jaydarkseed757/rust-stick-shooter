@@ -1,0 +1,11 @@
+[package]
+name = "rust-stick-shooter"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust-stick-shooter"
+path = "src/main.rs"
+
+[dependencies]
+macroquad = "0.4"
