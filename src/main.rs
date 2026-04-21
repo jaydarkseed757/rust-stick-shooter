@@ -1,5 +1,6 @@
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
+use gilrs::{Axis, Button, EventType, Gilrs};
 
 const PLAYER_SPEED: f32 = 220.0;
 const PLAYER_RADIUS: f32 = 10.0;
@@ -8,6 +9,15 @@ const BULLET_LIFETIME: f32 = 1.5;
 const SHOOT_COOLDOWN: f32 = 0.1;
 const INVINCIBLE_TIME: f32 = 2.5;
 const ARENA_MARGIN: f32 = 28.0;
+
+// ── Gamepad state (polled once per frame in main) ─────────────────────────────
+
+#[derive(Default, Clone, Copy)]
+struct GamepadState {
+    left_stick: Vec2,   // movement, deadzone already applied
+    right_stick: Vec2,  // aim/shoot, deadzone already applied
+    confirm: bool,      // Start / South button just-pressed this frame
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,12 +64,14 @@ impl Player {
         }
     }
 
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, gp: &GamepadState) {
+        // Movement: WASD + left gamepad stick
         let mut dir = Vec2::ZERO;
         if is_key_down(KeyCode::W) { dir.y -= 1.0; }
         if is_key_down(KeyCode::S) { dir.y += 1.0; }
         if is_key_down(KeyCode::A) { dir.x -= 1.0; }
         if is_key_down(KeyCode::D) { dir.x += 1.0; }
+        if gp.left_stick != Vec2::ZERO { dir += gp.left_stick; }
         if dir != Vec2::ZERO { dir = dir.normalize(); }
         self.pos += dir * PLAYER_SPEED * dt;
 
@@ -67,11 +79,15 @@ impl Player {
         self.pos.x = self.pos.x.clamp(m, screen_width() - m);
         self.pos.y = self.pos.y.clamp(m, screen_height() - m);
 
-        // Track mouse for facing angle
-        let mp = mouse_position();
-        let diff = vec2(mp.0, mp.1) - self.pos;
-        if diff.length_squared() > 25.0 {
-            self.angle = diff.y.atan2(diff.x);
+        // Facing angle: right stick takes priority, then mouse
+        if gp.right_stick != Vec2::ZERO {
+            self.angle = gp.right_stick.y.atan2(gp.right_stick.x);
+        } else {
+            let mp = mouse_position();
+            let diff = vec2(mp.0, mp.1) - self.pos;
+            if diff.length_squared() > 25.0 {
+                self.angle = diff.y.atan2(diff.x);
+            }
         }
 
         if self.invincible_timer > 0.0 { self.invincible_timer -= dt; }
@@ -79,8 +95,12 @@ impl Player {
     }
 
     // Returns normalized fire direction, or None if not shooting this frame.
-    fn shoot_dir(&self) -> Option<Vec2> {
-        // Arrow keys take priority (digital, always fires while held)
+    fn shoot_dir(&self, gp: &GamepadState) -> Option<Vec2> {
+        // Right gamepad stick: auto-fires while pushed past deadzone
+        if gp.right_stick != Vec2::ZERO {
+            return Some(gp.right_stick.normalize());
+        }
+        // Arrow keys (digital, fires while held)
         let mut arrow = Vec2::ZERO;
         if is_key_down(KeyCode::Up)    { arrow.y -= 1.0; }
         if is_key_down(KeyCode::Down)  { arrow.y += 1.0; }
@@ -396,25 +416,22 @@ impl Game {
         self.screen = Screen::Playing;
     }
 
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, gp: &GamepadState) {
+        let confirm = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) || gp.confirm;
         match self.screen {
             Screen::Menu => {
-                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                    self.start();
-                }
+                if confirm { self.start(); }
             }
-            Screen::Playing => self.update_game(dt),
+            Screen::Playing => self.update_game(dt, gp),
             Screen::GameOver => {
                 for p in &mut self.particles { p.update(dt); }
                 self.particles.retain(|p| p.lifetime > 0.0);
-                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                    self.screen = Screen::Menu;
-                }
+                if confirm { self.screen = Screen::Menu; }
             }
         }
     }
 
-    fn update_game(&mut self, dt: f32) {
+    fn update_game(&mut self, dt: f32, gp: &GamepadState) {
         // Wave spawn timing
         if self.next_wave_timer > 0.0 {
             self.next_wave_timer -= dt;
@@ -424,11 +441,11 @@ impl Game {
         }
         if self.wave_banner_timer > 0.0 { self.wave_banner_timer -= dt; }
 
-        self.player.update(dt);
+        self.player.update(dt, gp);
 
         // Player shooting
         if self.player.shoot_cooldown <= 0.0 {
-            if let Some(dir) = self.player.shoot_dir() {
+            if let Some(dir) = self.player.shoot_dir(gp) {
                 self.bullets.push(Bullet::new(self.player.pos, dir, true));
                 self.player.shoot_cooldown = SHOOT_COOLDOWN;
             }
@@ -645,9 +662,37 @@ impl Game {
 #[macroquad::main("Vector Storm")]
 async fn main() {
     let mut game = Game::new();
+    let mut gilrs = Gilrs::new().ok();
+    let mut active_gamepad: Option<gilrs::GamepadId> = None;
+
     loop {
+        // Poll gamepad events; track which pad is active and catch button presses.
+        let mut gp = GamepadState::default();
+        if let Some(ref mut g) = gilrs {
+            while let Some(gilrs::Event { id, event, .. }) = g.next_event() {
+                active_gamepad = Some(id);
+                if let EventType::ButtonPressed(btn, _) = event {
+                    if matches!(btn, Button::Start | Button::Select | Button::South) {
+                        gp.confirm = true;
+                    }
+                }
+            }
+            if let Some(id) = active_gamepad {
+                const DZ: f32 = 0.18;
+                let pad = g.gamepad(id);
+                let lx =  pad.axis_data(Axis::LeftStickX).map_or(0.0, |a| a.value());
+                let ly = -pad.axis_data(Axis::LeftStickY).map_or(0.0, |a| a.value()); // flip Y
+                let rx =  pad.axis_data(Axis::RightStickX).map_or(0.0, |a| a.value());
+                let ry = -pad.axis_data(Axis::RightStickY).map_or(0.0, |a| a.value()); // flip Y
+                let ls = vec2(lx, ly);
+                let rs = vec2(rx, ry);
+                if ls.length() > DZ { gp.left_stick  = ls; }
+                if rs.length() > DZ { gp.right_stick = rs; }
+            }
+        }
+
         let dt = get_frame_time().min(0.05);
-        game.update(dt);
+        game.update(dt, &gp);
         game.draw();
         next_frame().await;
     }
