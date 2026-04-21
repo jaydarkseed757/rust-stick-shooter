@@ -463,25 +463,80 @@ fn spawn_wave(enemies: &mut Vec<Enemy>, wave: u32, player_pos: Vec2) {
     for _ in 0..t { try_add(Enemy::new_tank); }
 }
 
-// ── Persistence ───────────────────────────────────────────────────────────────
+// ── Leaderboard ───────────────────────────────────────────────────────────────
 
-const HIGHSCORE_FILE: &str = "highscore.dat";
+const SCORES_FILE: &str = "scores.dat";
 
-fn load_high_score() -> u32 {
-    std::fs::read_to_string(HIGHSCORE_FILE)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
-}
+#[derive(Clone)]
+struct ScoreEntry { initials: String, score: u32 }
 
-fn save_high_score(score: u32) {
-    let _ = std::fs::write(HIGHSCORE_FILE, score.to_string());
+struct Leaderboard { entries: Vec<ScoreEntry> }
+
+impl Leaderboard {
+    fn defaults() -> Vec<ScoreEntry> {
+        vec![
+            ScoreEntry { initials: "ACE".into(), score: 52000 },
+            ScoreEntry { initials: "REX".into(), score: 43500 },
+            ScoreEntry { initials: "ZAX".into(), score: 37200 },
+            ScoreEntry { initials: "KAI".into(), score: 31800 },
+            ScoreEntry { initials: "MAX".into(), score: 27400 },
+            ScoreEntry { initials: "JAX".into(), score: 23100 },
+            ScoreEntry { initials: "LEX".into(), score: 19600 },
+            ScoreEntry { initials: "VEX".into(), score: 16300 },
+            ScoreEntry { initials: "DUO".into(), score: 13000 },
+            ScoreEntry { initials: "HAL".into(), score: 10100 },
+        ]
+    }
+
+    fn load() -> Self {
+        let text = std::fs::read_to_string(SCORES_FILE).unwrap_or_default();
+        let mut entries: Vec<ScoreEntry> = text
+            .lines()
+            .filter_map(|line| {
+                let mut p = line.split_whitespace();
+                let initials = p.next()?.to_string();
+                let score: u32 = p.next()?.parse().ok()?;
+                Some(ScoreEntry { initials, score })
+            })
+            .collect();
+        entries.sort_by(|a, b| b.score.cmp(&a.score));
+        if entries.len() < 10 { entries = Self::defaults(); }
+        entries.truncate(10);
+        Leaderboard { entries }
+    }
+
+    fn save(&self) {
+        let s: String = self.entries.iter()
+            .map(|e| format!("{} {}\n", e.initials, e.score))
+            .collect();
+        let _ = std::fs::write(SCORES_FILE, s);
+    }
+
+    fn top_score(&self) -> u32 {
+        self.entries.first().map_or(0, |e| e.score)
+    }
+
+    fn qualifies(&self, score: u32) -> bool {
+        score > self.entries.last().map_or(0, |e| e.score)
+    }
+
+    fn rank_of(&self, score: u32) -> usize {
+        self.entries.iter().position(|e| score > e.score).unwrap_or(self.entries.len())
+    }
+
+    fn insert(&mut self, initials: String, score: u32) -> usize {
+        let rank = self.rank_of(score);
+        self.entries.insert(rank, ScoreEntry { initials, score });
+        self.entries.truncate(10);
+        self.save();
+        rank
+    }
 }
 
 // ── Game ──────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq)]
-enum Screen { Menu, Playing, GameOver }
+enum Screen { Menu, Playing, GameOver, EnterInitials, Leaderboard }
 
 struct Game {
     screen: Screen,
@@ -490,13 +545,16 @@ struct Game {
     bullets: Vec<Bullet>,
     particles: Vec<Particle>,
     score: u32,
-    high_score: u32,
     wave: u32,
     wave_banner_timer: f32,
     next_wave_timer: f32,
     // title screen
     stars: Vec<Star>,
     ship_angle: f32,
+    // leaderboard
+    leaderboard: Leaderboard,
+    initials_input: String,
+    new_entry_rank: Option<usize>,
 }
 
 impl Game {
@@ -508,12 +566,14 @@ impl Game {
             bullets: Vec::new(),
             particles: Vec::new(),
             score: 0,
-            high_score: load_high_score(),
             wave: 1,
             wave_banner_timer: 0.0,
             next_wave_timer: 0.0,
-            stars: Vec::new(), // lazily filled on first menu frame
+            stars: Vec::new(),
             ship_angle: 0.0,
+            leaderboard: Leaderboard::load(),
+            initials_input: String::new(),
+            new_entry_rank: None,
         }
     }
 
@@ -557,8 +617,43 @@ impl Game {
             Screen::GameOver => {
                 for p in &mut self.particles { p.update(dt); }
                 self.particles.retain(|p| p.lifetime > 0.0);
+                if confirm {
+                    if self.leaderboard.qualifies(self.score) {
+                        self.initials_input.clear();
+                        self.new_entry_rank = None;
+                        self.screen = Screen::EnterInitials;
+                    } else {
+                        self.new_entry_rank = None;
+                        self.screen = Screen::Leaderboard;
+                    }
+                }
+            }
+            Screen::EnterInitials => {
+                for p in &mut self.particles { p.update(dt); }
+                self.particles.retain(|p| p.lifetime > 0.0);
+                self.update_enter_initials();
+            }
+            Screen::Leaderboard => {
+                for p in &mut self.particles { p.update(dt); }
+                self.particles.retain(|p| p.lifetime > 0.0);
                 if confirm { self.screen = Screen::Menu; }
             }
+        }
+    }
+
+    fn update_enter_initials(&mut self) {
+        while let Some(ch) = get_char_pressed() {
+            if self.initials_input.len() < 3 && ch.is_ascii_alphabetic() {
+                self.initials_input.push(ch.to_ascii_uppercase());
+            }
+        }
+        if is_key_pressed(KeyCode::Backspace) && !self.initials_input.is_empty() {
+            self.initials_input.pop();
+        }
+        if is_key_pressed(KeyCode::Enter) && self.initials_input.len() == 3 {
+            let rank = self.leaderboard.insert(self.initials_input.clone(), self.score);
+            self.new_entry_rank = Some(rank);
+            self.screen = Screen::Leaderboard;
         }
     }
 
@@ -667,10 +762,6 @@ impl Game {
         self.player.invincible_timer = INVINCIBLE_TIME;
         self.player.lives -= 1;
         if self.player.lives <= 0 {
-            if self.score > self.high_score {
-                self.high_score = self.score;
-                save_high_score(self.high_score);
-            }
             self.screen = Screen::GameOver;
         }
     }
@@ -678,9 +769,11 @@ impl Game {
     fn draw(&self) {
         clear_background(BLACK);
         match self.screen {
-            Screen::Menu     => self.draw_menu(),
-            Screen::Playing  => self.draw_game(),
-            Screen::GameOver => self.draw_gameover(),
+            Screen::Menu         => self.draw_menu(),
+            Screen::Playing      => self.draw_game(),
+            Screen::GameOver     => self.draw_gameover(),
+            Screen::EnterInitials => self.draw_enter_initials(),
+            Screen::Leaderboard  => self.draw_leaderboard(),
         }
     }
 
@@ -700,7 +793,7 @@ impl Game {
         let score_str = format!("SCORE: {:06}", self.score);
         draw_text(&score_str, ARENA_MARGIN + 5.0, ARENA_MARGIN - 7.0, 22.0, WHITE);
 
-        let hs_str = format!("BEST: {:06}", self.high_score);
+        let hs_str = format!("BEST: {:06}", self.leaderboard.top_score());
         let tw = measure_text(&hs_str, None, 22, 1.0).width;
         draw_text(&hs_str, screen_width() * 0.5 - tw * 0.5, ARENA_MARGIN - 7.0, 22.0, DARKGRAY);
 
@@ -769,11 +862,9 @@ impl Game {
         draw_text(prompt, cx - pw * 0.5, cy + 108.0, 26.0,
                   Color::new(0.2, pulse, 1.0, 1.0));
 
-        if self.high_score > 0 {
-            let hs = format!("HIGH SCORE: {:06}", self.high_score);
-            let hw = measure_text(&hs, None, 20, 1.0).width;
-            draw_text(&hs, cx - hw * 0.5, cy + 142.0, 20.0, WHITE);
-        }
+        let hs = format!("TOP SCORE: {:06}", self.leaderboard.top_score());
+        let hw = measure_text(&hs, None, 20, 1.0).width;
+        draw_text(&hs, cx - hw * 0.5, cy + 142.0, 20.0, WHITE);
     }
 
     fn draw_gameover(&self) {
@@ -789,17 +880,122 @@ impl Game {
 
         let score_str = format!("SCORE: {:06}", self.score);
         let sw = measure_text(&score_str, None, 36, 1.0).width;
-        draw_text(&score_str, cx - sw * 0.5, cy - 5.0, 36.0, WHITE);
+        draw_text(&score_str, cx - sw * 0.5, cy, 36.0, WHITE);
 
-        if self.score > 0 && self.score == self.high_score {
-            let msg = "NEW HIGH SCORE!";
-            let mw = measure_text(msg, None, 28, 1.0).width;
-            draw_text(msg, cx - mw * 0.5, cy + 32.0, 28.0, YELLOW);
-        }
+        let sub = if self.leaderboard.qualifies(self.score) {
+            let rank = self.leaderboard.rank_of(self.score) + 1;
+            format!("RANK #{} — ENTER YOUR INITIALS", rank)
+        } else {
+            "PRESS ENTER TO SEE HIGH SCORES".into()
+        };
+        let subw = measure_text(&sub, None, 20, 1.0).width;
+        draw_text(&sub, cx - subw * 0.5, cy + 38.0, 20.0, YELLOW);
 
         let prompt = "PRESS ENTER OR SPACE TO CONTINUE";
-        let pw = measure_text(prompt, None, 22, 1.0).width;
-        draw_text(prompt, cx - pw * 0.5, cy + 78.0, 22.0, GRAY);
+        let pw = measure_text(prompt, None, 20, 1.0).width;
+        draw_text(prompt, cx - pw * 0.5, cy + 80.0, 20.0, GRAY);
+    }
+
+    fn draw_enter_initials(&self) {
+        self.draw_arena();
+        for p in &self.particles { p.draw(); }
+
+        let cx = screen_width() * 0.5;
+        let cy = screen_height() * 0.5;
+        let rank = self.leaderboard.rank_of(self.score) + 1;
+
+        if rank == 1 {
+            let t = "NEW HIGH SCORE!";
+            let tw = measure_text(t, None, 36, 1.0).width;
+            draw_text(t, cx - tw * 0.5, cy - 120.0, 36.0, YELLOW);
+        }
+
+        let rt = format!("RANK #{}", rank);
+        let rw = measure_text(&rt, None, 28, 1.0).width;
+        draw_text(&rt, cx - rw * 0.5, cy - 82.0, 28.0, WHITE);
+
+        let st = format!("SCORE: {:06}", self.score);
+        let sw = measure_text(&st, None, 22, 1.0).width;
+        draw_text(&st, cx - sw * 0.5, cy - 50.0, 22.0, GRAY);
+
+        let prompt = "ENTER YOUR INITIALS";
+        let pw = measure_text(prompt, None, 20, 1.0).width;
+        draw_text(prompt, cx - pw * 0.5, cy - 10.0, 20.0, DARKGRAY);
+
+        // Three character slots
+        let chars: Vec<char> = self.initials_input.chars().collect();
+        let blink = (get_time() * 3.0) as i32 % 2 == 0;
+        let slot_w = 38.0;
+        let gap = 12.0;
+        let total = 3.0 * slot_w + 2.0 * gap;
+        let sx = cx - total * 0.5;
+        let sy = cy + 18.0;
+
+        for i in 0..3 {
+            let x = sx + i as f32 * (slot_w + gap);
+            let is_cursor = i == chars.len() && blink;
+            let border_col = if i < chars.len() { WHITE }
+                             else if is_cursor { SKYBLUE }
+                             else { DARKGRAY };
+            draw_rectangle_lines(x, sy, slot_w, slot_w + 8.0, 2.0, border_col);
+            if i < chars.len() {
+                let ch = chars[i].to_string();
+                let cw = measure_text(&ch, None, 44, 1.0).width;
+                draw_text(&ch, x + slot_w * 0.5 - cw * 0.5, sy + slot_w - 2.0, 44.0, WHITE);
+            } else if is_cursor {
+                draw_rectangle(x + 6.0, sy + slot_w - 4.0, slot_w - 12.0, 3.0, SKYBLUE);
+            }
+        }
+
+        let hint = if self.initials_input.len() < 3 {
+            "TYPE 3 LETTERS"
+        } else {
+            "PRESS ENTER TO CONFIRM"
+        };
+        let hw = measure_text(hint, None, 17, 1.0).width;
+        draw_text(hint, cx - hw * 0.5, sy + 78.0, 17.0, DARKGRAY);
+    }
+
+    fn draw_leaderboard(&self) {
+        self.draw_arena();
+        for p in &self.particles { p.draw(); }
+
+        let cx = screen_width() * 0.5;
+        let m = ARENA_MARGIN;
+
+        let title = "HIGH SCORES";
+        let tw = measure_text(title, None, 40, 1.0).width;
+        draw_text(title, cx - tw * 0.5, m + 36.0, 40.0, YELLOW);
+
+        let st = format!("YOUR SCORE: {:06}", self.score);
+        let sw = measure_text(&st, None, 20, 1.0).width;
+        draw_text(&st, cx - sw * 0.5, m + 66.0, 20.0, WHITE);
+
+        // Entries — three columns: rank, initials, score
+        let entry_y0 = m + 100.0;
+        let spacing  = (screen_height() - m - 50.0 - entry_y0) / 10.0;
+
+        for (i, entry) in self.leaderboard.entries.iter().enumerate() {
+            let y = entry_y0 + i as f32 * spacing;
+            let is_new = self.new_entry_rank == Some(i);
+            let color = if is_new { YELLOW } else if i == 0 { WHITE } else { GRAY };
+
+            let rank_str = format!("{}.", i + 1);
+            let rw = measure_text(&rank_str, None, 20, 1.0).width;
+            draw_text(&rank_str, cx - 120.0 - rw, y, 20.0, color);
+            draw_text(&entry.initials, cx - 100.0, y, 20.0, color);
+            let score_str = format!("{:06}", entry.score);
+            let ssw = measure_text(&score_str, None, 20, 1.0).width;
+            draw_text(&score_str, cx + 80.0 - ssw * 0.5, y, 20.0, color);
+
+            if is_new {
+                draw_text("◄", cx + 90.0, y, 18.0, YELLOW);
+            }
+        }
+
+        let prompt = "PRESS ENTER TO CONTINUE";
+        let pw = measure_text(prompt, None, 20, 1.0).width;
+        draw_text(prompt, cx - pw * 0.5, screen_height() - m - 8.0, 20.0, GRAY);
     }
 }
 
