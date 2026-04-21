@@ -19,6 +19,100 @@ struct GamepadState {
     confirm: bool,      // Start / South button just-pressed this frame
 }
 
+// ── Title-screen stars ────────────────────────────────────────────────────────
+
+struct Star {
+    x: f32,
+    y: f32,
+    speed: f32,
+    radius: f32,
+    brightness: f32,
+}
+
+fn init_stars() -> Vec<Star> {
+    let w = screen_width();
+    let h = screen_height();
+    let mut v = Vec::with_capacity(120);
+    // Three layers: far/slow, mid, near/fast.  Appended in order so far
+    // stars are drawn first (behind mid and near stars).
+    for _ in 0..60 {
+        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+            speed: gen_range(15.0f32, 35.0), radius: gen_range(0.4f32, 0.9),
+            brightness: gen_range(0.15f32, 0.35) });
+    }
+    for _ in 0..35 {
+        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+            speed: gen_range(55.0f32, 90.0), radius: gen_range(0.8f32, 1.4),
+            brightness: gen_range(0.4f32, 0.65) });
+    }
+    for _ in 0..15 {
+        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+            speed: gen_range(110.0f32, 170.0), radius: gen_range(1.4f32, 2.4),
+            brightness: gen_range(0.7f32, 1.0) });
+    }
+    v
+}
+
+// ── 3-D wireframe ship (title screen) ────────────────────────────────────────
+
+fn draw_3d_ship(scr_cx: f32, scr_cy: f32, angle: f32) {
+    // Ship vertices (x = right, y = down, z = toward viewer).
+    let verts: [(f32, f32, f32); 8] = [
+        (  0.0, -1.0,  20.0),  // 0 nose
+        (-16.0,  0.0,  -6.0),  // 1 left wing tip
+        ( 16.0,  0.0,  -6.0),  // 2 right wing tip
+        (  0.0,  0.0, -12.0),  // 3 tail
+        (  0.0, -6.0,   7.0),  // 4 cockpit
+        ( -4.5,  2.5,  -9.0),  // 5 left engine
+        (  4.5,  2.5,  -9.0),  // 6 right engine
+        (  0.0,  0.0,   1.0),  // 7 wing join
+    ];
+    let edges: [(usize, usize); 11] = [
+        (0, 1), (0, 2), (0, 4),          // nose struts
+        (1, 3), (2, 3),                   // wings to tail
+        (4, 7), (7, 1), (7, 2),           // cockpit frame
+        (3, 5), (3, 6), (5, 6),           // tail / engines
+    ];
+
+    // Primary Y-axis spin with a gentle X-axis wobble for depth.
+    let (sin_ay, cos_ay) = angle.sin_cos();
+    let ax = (angle * 0.35).sin() * 0.22;
+    let (sin_ax, cos_ax) = ax.sin_cos();
+
+    let transform = |(x, y, z): (f32, f32, f32)| -> (f32, f32, f32) {
+        let x1 =  x * cos_ay + z * sin_ay;
+        let z1 = -x * sin_ay + z * cos_ay;
+        let y2 = y * cos_ax - z1 * sin_ax;
+        let z2 = y * sin_ax + z1 * cos_ax;
+        (x1, y2, z2)
+    };
+    // Perspective: camera at z = +88, focal = 480.
+    let project = |(x, y, z): (f32, f32, f32)| -> Vec2 {
+        let s = 480.0 / (88.0 - z).max(20.0);
+        vec2(scr_cx + x * s, scr_cy + y * s)
+    };
+
+    let t: Vec<(f32, f32, f32)> = verts.iter().map(|&v| transform(v)).collect();
+    let p: Vec<Vec2>             = t.iter()   .map(|&v| project(v))  .collect();
+
+    // Wide glow pass first, then crisp edges on top.
+    for &(a, b) in &edges {
+        draw_line(p[a].x, p[a].y, p[b].x, p[b].y, 5.0,
+                  Color::new(0.05, 0.3, 0.7, 0.22));
+    }
+    for &(a, b) in &edges {
+        let mid_z  = (t[a].2 + t[b].2) * 0.5;
+        let bright = ((mid_z + 15.0) / 40.0).clamp(0.35, 1.0);
+        let c = Color::new(bright * 0.35, bright * 0.85, bright, 1.0);
+        draw_line(p[a].x, p[a].y, p[b].x, p[b].y, 2.0, c);
+    }
+    // Engine glow dots
+    for idx in [5usize, 6] {
+        draw_circle(p[idx].x, p[idx].y, 5.5, Color::new(0.2, 0.5, 1.0, 0.9));
+        draw_circle(p[idx].x, p[idx].y, 9.5, Color::new(0.1, 0.3, 0.9, 0.22));
+    }
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn circles_overlap(a: Vec2, ra: f32, b: Vec2, rb: f32) -> bool {
@@ -386,6 +480,9 @@ struct Game {
     wave: u32,
     wave_banner_timer: f32,
     next_wave_timer: f32,
+    // title screen
+    stars: Vec<Star>,
+    ship_angle: f32,
 }
 
 impl Game {
@@ -401,6 +498,8 @@ impl Game {
             wave: 1,
             wave_banner_timer: 0.0,
             next_wave_timer: 0.0,
+            stars: Vec::new(), // lazily filled on first menu frame
+            ship_angle: 0.0,
         }
     }
 
@@ -416,10 +515,27 @@ impl Game {
         self.screen = Screen::Playing;
     }
 
+    fn update_menu(&mut self, dt: f32) {
+        if self.stars.is_empty() {
+            self.stars = init_stars();
+        }
+        let w = screen_width();
+        let h = screen_height();
+        for star in &mut self.stars {
+            star.x -= star.speed * dt;
+            if star.x < -star.radius {
+                star.x = w + star.radius;
+                star.y = gen_range(0.0, h);
+            }
+        }
+        self.ship_angle += dt * 0.75;
+    }
+
     fn update(&mut self, dt: f32, gp: &GamepadState) {
         let confirm = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) || gp.confirm;
         match self.screen {
             Screen::Menu => {
+                self.update_menu(dt);
                 if confirm { self.start(); }
             }
             Screen::Playing => self.update_game(dt, gp),
@@ -601,32 +717,44 @@ impl Game {
     }
 
     fn draw_menu(&self) {
+        // ── parallax star field ──
+        for star in &self.stars {
+            let b = star.brightness;
+            draw_circle(star.x, star.y, star.radius,
+                        Color::new(b * 0.85, b * 0.92, b, 1.0));
+        }
+
         self.draw_arena();
 
         let cx = screen_width() * 0.5;
         let cy = screen_height() * 0.5;
 
+        // ── rotating 3-D ship (centred slightly above mid) ──
+        draw_3d_ship(cx, cy - 10.0, self.ship_angle);
+
+        // ── text layout pushed above/below the ship ──
         let title = "VECTOR STORM";
         let tw = measure_text(title, None, 72, 1.0).width;
-        draw_text(title, cx - tw * 0.5, cy - 70.0, 72.0, YELLOW);
+        draw_text(title, cx - tw * 0.5, cy - 118.0, 72.0, YELLOW);
 
         let sub = "TWIN-STICK SHOOTER";
-        let sw = measure_text(sub, None, 24, 1.0).width;
-        draw_text(sub, cx - sw * 0.5, cy - 28.0, 24.0, DARKGRAY);
+        let sw = measure_text(sub, None, 22, 1.0).width;
+        draw_text(sub, cx - sw * 0.5, cy - 83.0, 22.0, DARKGRAY);
 
         let ctrl = "WASD: Move     Mouse/Click or Arrows: Shoot";
-        let cw = measure_text(ctrl, None, 18, 1.0).width;
-        draw_text(ctrl, cx - cw * 0.5, cy + 10.0, 18.0, Color::new(0.45, 0.45, 0.45, 1.0));
+        let cw = measure_text(ctrl, None, 17, 1.0).width;
+        draw_text(ctrl, cx - cw * 0.5, cy + 72.0, 17.0, Color::new(0.4, 0.4, 0.4, 1.0));
 
         let pulse = ((get_time() * 2.0).sin() as f32 * 0.35 + 0.65).max(0.0);
         let prompt = "PRESS ENTER OR SPACE TO START";
-        let pw = measure_text(prompt, None, 28, 1.0).width;
-        draw_text(prompt, cx - pw * 0.5, cy + 58.0, 28.0, Color::new(0.2, pulse, 1.0, 1.0));
+        let pw = measure_text(prompt, None, 26, 1.0).width;
+        draw_text(prompt, cx - pw * 0.5, cy + 108.0, 26.0,
+                  Color::new(0.2, pulse, 1.0, 1.0));
 
         if self.high_score > 0 {
             let hs = format!("HIGH SCORE: {:06}", self.high_score);
-            let hw = measure_text(&hs, None, 22, 1.0).width;
-            draw_text(&hs, cx - hw * 0.5, cy + 98.0, 22.0, WHITE);
+            let hw = measure_text(&hs, None, 20, 1.0).width;
+            draw_text(&hs, cx - hw * 0.5, cy + 142.0, 20.0, WHITE);
         }
     }
 
