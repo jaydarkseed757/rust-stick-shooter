@@ -376,8 +376,8 @@ impl Bullet {
         self.pos += self.vel * dt;
         self.lifetime -= dt;
         if self.lifetime <= 0.0
-            || self.pos.x < 0.0 || self.pos.x > screen_width()
-            || self.pos.y < 0.0 || self.pos.y > screen_height()
+            || self.pos.x < ARENA_MARGIN || self.pos.x > screen_width()  - ARENA_MARGIN
+            || self.pos.y < ARENA_MARGIN || self.pos.y > screen_height() - ARENA_MARGIN
         {
             self.dead = true;
         }
