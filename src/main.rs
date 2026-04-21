@@ -30,23 +30,22 @@ struct Star {
 }
 
 fn init_stars() -> Vec<Star> {
+    let m = ARENA_MARGIN;
     let w = screen_width();
     let h = screen_height();
     let mut v = Vec::with_capacity(120);
-    // Three layers: far/slow, mid, near/fast.  Appended in order so far
-    // stars are drawn first (behind mid and near stars).
     for _ in 0..60 {
-        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+        v.push(Star { x: gen_range(m, w - m), y: gen_range(m, h - m),
             speed: gen_range(15.0f32, 35.0), radius: gen_range(0.4f32, 0.9),
             brightness: gen_range(0.15f32, 0.35) });
     }
     for _ in 0..35 {
-        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+        v.push(Star { x: gen_range(m, w - m), y: gen_range(m, h - m),
             speed: gen_range(55.0f32, 90.0), radius: gen_range(0.8f32, 1.4),
             brightness: gen_range(0.4f32, 0.65) });
     }
     for _ in 0..15 {
-        v.push(Star { x: gen_range(0.0, w), y: gen_range(0.0, h),
+        v.push(Star { x: gen_range(m, w - m), y: gen_range(m, h - m),
             speed: gen_range(110.0f32, 170.0), radius: gen_range(1.4f32, 2.4),
             brightness: gen_range(0.7f32, 1.0) });
     }
@@ -519,13 +518,14 @@ impl Game {
         if self.stars.is_empty() {
             self.stars = init_stars();
         }
+        let m = ARENA_MARGIN;
         let w = screen_width();
         let h = screen_height();
         for star in &mut self.stars {
             star.x -= star.speed * dt;
-            if star.x < -star.radius {
-                star.x = w + star.radius;
-                star.y = gen_range(0.0, h);
+            if star.x < m {
+                star.x = w - m;
+                star.y = gen_range(m, h - m);
             }
         }
         self.ship_angle += dt * 0.75;
