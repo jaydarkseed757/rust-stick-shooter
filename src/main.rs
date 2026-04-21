@@ -463,6 +463,21 @@ fn spawn_wave(enemies: &mut Vec<Enemy>, wave: u32, player_pos: Vec2) {
     for _ in 0..t { try_add(Enemy::new_tank); }
 }
 
+// ── Persistence ───────────────────────────────────────────────────────────────
+
+const HIGHSCORE_FILE: &str = "highscore.dat";
+
+fn load_high_score() -> u32 {
+    std::fs::read_to_string(HIGHSCORE_FILE)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn save_high_score(score: u32) {
+    let _ = std::fs::write(HIGHSCORE_FILE, score.to_string());
+}
+
 // ── Game ──────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq)]
@@ -493,7 +508,7 @@ impl Game {
             bullets: Vec::new(),
             particles: Vec::new(),
             score: 0,
-            high_score: 0,
+            high_score: load_high_score(),
             wave: 1,
             wave_banner_timer: 0.0,
             next_wave_timer: 0.0,
@@ -652,7 +667,10 @@ impl Game {
         self.player.invincible_timer = INVINCIBLE_TIME;
         self.player.lives -= 1;
         if self.player.lives <= 0 {
-            if self.score > self.high_score { self.high_score = self.score; }
+            if self.score > self.high_score {
+                self.high_score = self.score;
+                save_high_score(self.high_score);
+            }
             self.screen = Screen::GameOver;
         }
     }
