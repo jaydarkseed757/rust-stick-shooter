@@ -681,7 +681,7 @@ impl Leaderboard {
 // ── Game ──────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq)]
-enum Screen { Menu, Playing, EnterInitials, Leaderboard }
+enum Screen { Menu, Playing, EnterInitials, Leaderboard, Credits }
 
 struct Game {
     screen: Screen,
@@ -761,6 +761,7 @@ impl Game {
             Screen::Menu => {
                 self.update_menu(dt);
                 if confirm { self.start(); }
+                if is_key_pressed(KeyCode::C) { self.screen = Screen::Credits; }
             }
             Screen::Playing => self.update_game(dt, gp),
             Screen::EnterInitials => {
@@ -772,8 +773,13 @@ impl Game {
                 for p in &mut self.particles { p.update(dt); }
                 self.particles.retain(|p| p.lifetime > 0.0);
                 if confirm {
-                    self.attract_timer = 0.0; // restart attract cycle
+                    self.attract_timer = 0.0;
                     self.new_entry_rank = None;
+                    self.screen = Screen::Menu;
+                }
+            }
+            Screen::Credits => {
+                if confirm || is_key_pressed(KeyCode::Escape) || gp.confirm {
                     self.screen = Screen::Menu;
                 }
             }
@@ -920,9 +926,10 @@ impl Game {
             } else {
                 self.draw_menu();
             },
-            Screen::Playing      => self.draw_game(),
+            Screen::Playing       => self.draw_game(),
             Screen::EnterInitials => self.draw_enter_initials(),
-            Screen::Leaderboard  => self.draw_leaderboard(),
+            Screen::Leaderboard   => self.draw_leaderboard(),
+            Screen::Credits       => self.draw_credits(),
         }
     }
 
@@ -1014,6 +1021,10 @@ impl Game {
         let hs = format!("TOP SCORE: {:06}", self.leaderboard.top_score());
         let hw = measure_text(&hs, None, 20, 1.0).width;
         draw_text(&hs, cx - hw * 0.5, cy + 142.0, 20.0, WHITE);
+
+        let cr = "C: CREDITS";
+        let crw = measure_text(cr, None, 15, 1.0).width;
+        draw_text(cr, cx - crw * 0.5, cy + 168.0, 15.0, Color::new(0.3, 0.3, 0.3, 1.0));
     }
 
     fn draw_attract_leaderboard(&self) {
@@ -1116,6 +1127,52 @@ impl Game {
         };
         let hw = measure_text(hint, None, 17, 1.0).width;
         draw_text(hint, cx - hw * 0.5, sy + 78.0, 17.0, DARKGRAY);
+    }
+
+    fn draw_credits(&self) {
+        self.draw_arena();
+
+        let cx = screen_width()  * 0.5;
+        let cy = screen_height() * 0.5;
+
+        let title = "CREDITS";
+        let tw = measure_text(title, None, 56, 1.0).width;
+        draw_text(title, cx - tw * 0.5, cy - 140.0, 56.0, YELLOW);
+
+        // Decorative divider
+        draw_line(cx - 120.0, cy - 118.0, cx + 120.0, cy - 118.0, 1.0,
+                  Color::new(0.3, 0.3, 0.3, 1.0));
+
+        let rows: &[(&str, &str, Color)] = &[
+            ("GAME",              "VECTOR STORM",  WHITE),
+            ("DESIGN & CODE",     "JAY",           SKYBLUE),
+            ("ADDITIONAL HELP",   "CLAUDE",        Color::new(0.85, 0.55, 1.0, 1.0)),
+            ("POWERED BY",        "MACROQUAD",     Color::new(0.4, 0.8, 0.4, 1.0)),
+        ];
+
+        let row_h = 46.0;
+        let label_x = cx - 20.0;
+        let value_x = cx + 20.0;
+
+        for (i, (label, value, color)) in rows.iter().enumerate() {
+            let y = cy - 72.0 + i as f32 * row_h;
+            let lw = measure_text(label, None, 14, 1.0).width;
+            draw_text(label, label_x - lw, y, 14.0, DARKGRAY);
+            draw_text(value, value_x, y, 22.0, *color);
+        }
+
+        draw_line(cx - 120.0, cy + 116.0, cx + 120.0, cy + 116.0, 1.0,
+                  Color::new(0.3, 0.3, 0.3, 1.0));
+
+        let sub = "Built with Rust";
+        let sw = measure_text(sub, None, 15, 1.0).width;
+        draw_text(sub, cx - sw * 0.5, cy + 135.0, 15.0, Color::new(0.35, 0.35, 0.35, 1.0));
+
+        let pulse = ((get_time() * 2.0).sin() as f32 * 0.3 + 0.7).max(0.0);
+        let prompt = "PRESS ENTER TO GO BACK";
+        let pw = measure_text(prompt, None, 18, 1.0).width;
+        draw_text(prompt, cx - pw * 0.5, cy + 170.0, 18.0,
+                  Color::new(0.4, 0.4 * pulse, 0.4, 1.0));
     }
 
     fn draw_leaderboard(&self) {
