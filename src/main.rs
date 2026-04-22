@@ -234,7 +234,14 @@ impl Player {
 // ── Enemy ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq)]
-enum EnemyKind { Grunt, Spheroid, Tank }
+enum EnemyKind {
+    Grunt,     // chases player, red triangle
+    Spheroid,  // arcs + spawns grunts, purple circle
+    Tank,      // slow, fires single shot, green hex
+    Enforcer,  // fast diagonal bouncer, 3-way spread shot, orange diamond
+    Phantom,   // teleports periodically, fires 4-cardinal burst, magenta rings
+    Bomber,    // slow, fires 8-way radial burst, gold circle
+}
 
 struct Enemy {
     pos: Vec2,
@@ -242,8 +249,8 @@ struct Enemy {
     kind: EnemyKind,
     health: i32,
     angle: f32,       // facing / visual rotation
-    shoot_timer: f32, // Tank: time until next shot
-    spawn_timer: f32, // Spheroid: time until next grunt spawn
+    shoot_timer: f32, // fire cooldown (Tank, Enforcer, Bomber)
+    spawn_timer: f32, // Spheroid: grunt spawn; Phantom: teleport countdown
     dead: bool,
 }
 
@@ -261,19 +268,42 @@ impl Enemy {
         Enemy { pos, vel: Vec2::ZERO, kind: EnemyKind::Tank, health: 3,
                 angle: 0.0, shoot_timer: 2.0, spawn_timer: 0.0, dead: false }
     }
+    fn new_enforcer(pos: Vec2) -> Self {
+        let a = gen_range(0.0f32, std::f32::consts::TAU);
+        Enemy { pos, vel: vec2(a.cos(), a.sin()) * 115.0, kind: EnemyKind::Enforcer, health: 2,
+                angle: 0.0, shoot_timer: 1.8, spawn_timer: 0.0, dead: false }
+    }
+    fn new_phantom(pos: Vec2) -> Self {
+        Enemy { pos, vel: Vec2::ZERO, kind: EnemyKind::Phantom, health: 2,
+                angle: 0.0, shoot_timer: 0.0, spawn_timer: 3.0, dead: false }
+    }
+    fn new_bomber(pos: Vec2) -> Self {
+        Enemy { pos, vel: Vec2::ZERO, kind: EnemyKind::Bomber, health: 3,
+                angle: 0.0, shoot_timer: 3.0, spawn_timer: 0.0, dead: false }
+    }
 
     fn radius(&self) -> f32 {
-        match self.kind { EnemyKind::Grunt => 9.0, EnemyKind::Spheroid => 14.0, EnemyKind::Tank => 12.0 }
+        match self.kind {
+            EnemyKind::Grunt => 9.0, EnemyKind::Spheroid => 14.0, EnemyKind::Tank => 12.0,
+            EnemyKind::Enforcer => 10.0, EnemyKind::Phantom => 11.0, EnemyKind::Bomber => 13.0,
+        }
     }
     fn score_value(&self) -> u32 {
-        match self.kind { EnemyKind::Grunt => 100, EnemyKind::Spheroid => 500, EnemyKind::Tank => 250 }
+        match self.kind {
+            EnemyKind::Grunt => 100, EnemyKind::Spheroid => 500, EnemyKind::Tank => 250,
+            EnemyKind::Enforcer => 300, EnemyKind::Phantom => 400, EnemyKind::Bomber => 350,
+        }
     }
     fn particle_color(&self) -> Color {
-        match self.kind { EnemyKind::Grunt => RED, EnemyKind::Spheroid => PURPLE, EnemyKind::Tank => GREEN }
+        match self.kind {
+            EnemyKind::Grunt => RED, EnemyKind::Spheroid => PURPLE, EnemyKind::Tank => GREEN,
+            EnemyKind::Enforcer => ORANGE, EnemyKind::Phantom => PINK,
+            EnemyKind::Bomber => Color::new(0.85, 0.65, 0.05, 1.0),
+        }
     }
 
-    // Returns Some(fire_dir) when this enemy fires a bullet this frame.
-    fn update(&mut self, player_pos: Vec2, dt: f32, wave: u32) -> Option<Vec2> {
+    // Returns fire directions for bullets to spawn this frame (empty = no shot).
+    fn update(&mut self, player_pos: Vec2, dt: f32, wave: u32) -> Vec<Vec2> {
         match self.kind {
             EnemyKind::Grunt => {
                 let dir = (player_pos - self.pos).normalize_or_zero();
@@ -281,7 +311,6 @@ impl Enemy {
                 self.angle = dir.y.atan2(dir.x);
             }
             EnemyKind::Spheroid => {
-                // Arc motion: slowly rotate the velocity vector
                 let rot = 0.9 * dt;
                 let (s, c) = rot.sin_cos();
                 let vx = self.vel.x * c - self.vel.y * s;
@@ -297,12 +326,77 @@ impl Enemy {
                 self.shoot_timer -= dt;
                 if self.shoot_timer <= 0.0 {
                     self.shoot_timer = (2.0 - wave as f32 * 0.1).max(0.7);
-                    // pos update happens below before we return
                     self.pos += self.vel * dt;
                     let m = ARENA_MARGIN + self.radius();
                     self.pos.x = self.pos.x.clamp(m, screen_width() - m);
                     self.pos.y = self.pos.y.clamp(m, screen_height() - m);
-                    return Some(dir);
+                    return vec![dir];
+                }
+            }
+            EnemyKind::Enforcer => {
+                // Fast diagonal bouncer; fires 3-way spread toward player
+                self.angle += dt * 4.0;
+                self.shoot_timer -= dt;
+                if self.shoot_timer <= 0.0 {
+                    self.shoot_timer = (1.8 - wave as f32 * 0.07).max(0.55);
+                    let dir = (player_pos - self.pos).normalize_or_zero();
+                    let base = dir.y.atan2(dir.x);
+                    let sp = 0.35; // ~20° spread
+                    let shots = vec![
+                        vec2((base - sp).cos(), (base - sp).sin()),
+                        dir,
+                        vec2((base + sp).cos(), (base + sp).sin()),
+                    ];
+                    self.pos += self.vel * dt;
+                    let m = ARENA_MARGIN + self.radius();
+                    if self.pos.x <= m { self.pos.x = m; self.vel.x = self.vel.x.abs(); }
+                    if self.pos.x >= screen_width() - m { self.pos.x = screen_width() - m; self.vel.x = -self.vel.x.abs(); }
+                    if self.pos.y <= m { self.pos.y = m; self.vel.y = self.vel.y.abs(); }
+                    if self.pos.y >= screen_height() - m { self.pos.y = screen_height() - m; self.vel.y = -self.vel.y.abs(); }
+                    return shots;
+                }
+            }
+            EnemyKind::Phantom => {
+                // Drifts slowly toward player; teleports periodically and fires a cardinal burst
+                let dir = (player_pos - self.pos).normalize_or_zero();
+                self.vel = dir * 30.0;
+                self.angle += dt * 2.2;
+                self.spawn_timer -= dt;
+                if self.spawn_timer <= 0.0 {
+                    self.spawn_timer = (3.0 - wave as f32 * 0.12).max(1.1);
+                    let m = ARENA_MARGIN + self.radius() + 10.0;
+                    for _ in 0..12 {
+                        let nx = gen_range(m, screen_width() - m);
+                        let ny = gen_range(m, screen_height() - m);
+                        let npos = vec2(nx, ny);
+                        if (npos - player_pos).length() > 80.0 {
+                            self.pos = npos;
+                            break;
+                        }
+                    }
+                    return vec![
+                        vec2(1.0, 0.0), vec2(-1.0, 0.0),
+                        vec2(0.0, 1.0), vec2(0.0, -1.0),
+                    ];
+                }
+            }
+            EnemyKind::Bomber => {
+                // Very slow; fires 8-way radial burst on a long cooldown
+                let dir = (player_pos - self.pos).normalize_or_zero();
+                self.vel = dir * 26.0;
+                self.angle += dt * 1.5;
+                self.shoot_timer -= dt;
+                if self.shoot_timer <= 0.0 {
+                    self.shoot_timer = (3.0 - wave as f32 * 0.09).max(1.0);
+                    let shots: Vec<Vec2> = (0..8).map(|i| {
+                        let a = i as f32 * std::f32::consts::TAU / 8.0;
+                        vec2(a.cos(), a.sin())
+                    }).collect();
+                    self.pos += self.vel * dt;
+                    let m = ARENA_MARGIN + self.radius();
+                    self.pos.x = self.pos.x.clamp(m, screen_width() - m);
+                    self.pos.y = self.pos.y.clamp(m, screen_height() - m);
+                    return shots;
                 }
             }
         }
@@ -310,8 +404,7 @@ impl Enemy {
         self.pos += self.vel * dt;
 
         let m = ARENA_MARGIN + self.radius();
-        if self.kind == EnemyKind::Spheroid {
-            // Bounce off arena walls
+        if matches!(self.kind, EnemyKind::Spheroid | EnemyKind::Enforcer) {
             if self.pos.x <= m { self.pos.x = m; self.vel.x = self.vel.x.abs(); }
             if self.pos.x >= screen_width() - m { self.pos.x = screen_width() - m; self.vel.x = -self.vel.x.abs(); }
             if self.pos.y <= m { self.pos.y = m; self.vel.y = self.vel.y.abs(); }
@@ -320,7 +413,7 @@ impl Enemy {
             self.pos.x = self.pos.x.clamp(m, screen_width() - m);
             self.pos.y = self.pos.y.clamp(m, screen_height() - m);
         }
-        None
+        vec![]
     }
 
     fn draw(&self) {
@@ -347,10 +440,55 @@ impl Enemy {
             EnemyKind::Tank => {
                 draw_poly(self.pos.x, self.pos.y, 6, 12.0, self.angle.to_degrees(), DARKGREEN);
                 draw_poly_lines(self.pos.x, self.pos.y, 6, 12.0, self.angle.to_degrees(), 1.5, GREEN);
-                // Gun barrel pointing at player
                 let bx = self.pos.x + self.angle.cos() * 18.0;
                 let by = self.pos.y + self.angle.sin() * 18.0;
                 draw_line(self.pos.x, self.pos.y, bx, by, 3.5, GREEN);
+            }
+            EnemyKind::Enforcer => {
+                // Spinning orange diamond with glow
+                let deg = self.angle.to_degrees();
+                draw_poly(self.pos.x, self.pos.y, 4, 10.0, deg + 45.0,
+                          Color::new(0.8, 0.35, 0.0, 1.0));
+                draw_poly_lines(self.pos.x, self.pos.y, 4, 10.0, deg + 45.0, 2.0, ORANGE);
+                draw_poly_lines(self.pos.x, self.pos.y, 4, 14.0, deg + 45.0, 1.0,
+                                Color::new(1.0, 0.5, 0.0, 0.25));
+            }
+            EnemyKind::Phantom => {
+                // Pulsing magenta double-ring with spinning spokes
+                let pulse = ((get_time() * 5.0).sin() as f32 * 0.3 + 0.7).max(0.0);
+                let mg = Color::new(0.9, 0.15, 0.95, pulse);
+                let mg_dim = Color::new(0.9, 0.15, 0.95, pulse * 0.4);
+                draw_circle_lines(self.pos.x, self.pos.y, 11.0, 1.8, mg);
+                draw_circle_lines(self.pos.x, self.pos.y, 6.0,  1.2, mg);
+                draw_circle(self.pos.x, self.pos.y, 2.5, mg);
+                for i in 0..4 {
+                    let a = self.angle + i as f32 * std::f32::consts::TAU / 4.0;
+                    draw_line(
+                        self.pos.x + a.cos() * 3.0, self.pos.y + a.sin() * 3.0,
+                        self.pos.x + a.cos() * 9.5, self.pos.y + a.sin() * 9.5,
+                        1.2, mg_dim,
+                    );
+                }
+            }
+            EnemyKind::Bomber => {
+                // Gold circle-bomb with inner ring and fuse
+                let gold = Color::new(0.85, 0.65, 0.05, 1.0);
+                let gold_dim = Color::new(0.5, 0.38, 0.0, 1.0);
+                draw_circle(self.pos.x, self.pos.y, 13.0, gold_dim);
+                draw_circle_lines(self.pos.x, self.pos.y, 13.0, 2.2, gold);
+                draw_circle_lines(self.pos.x, self.pos.y, 7.0,  1.2, gold);
+                draw_circle(self.pos.x, self.pos.y, 3.0, gold);
+                // Fuse sticking upward in facing direction
+                let fa = self.angle - std::f32::consts::FRAC_PI_2;
+                draw_line(
+                    self.pos.x + fa.cos() * 7.0, self.pos.y + fa.sin() * 7.0,
+                    self.pos.x + fa.cos() * 17.0, self.pos.y + fa.sin() * 17.0,
+                    2.5, Color::new(0.7, 0.4, 0.1, 1.0),
+                );
+                draw_circle(
+                    self.pos.x + fa.cos() * 17.0, self.pos.y + fa.sin() * 17.0,
+                    3.0, Color::new(1.0, 0.6, 0.1, 0.8),
+                );
             }
         }
     }
@@ -436,15 +574,22 @@ impl Particle {
 
 // ── Wave config ───────────────────────────────────────────────────────────────
 
-fn wave_enemies(wave: u32) -> (usize, usize, usize) {
+fn wave_enemies(wave: u32) -> [usize; 6] {
     let grunts    = (4 + wave * 3) as usize;
     let spheroids = if wave >= 2 { ((wave - 1) / 2) as usize } else { 0 };
     let tanks     = if wave >= 3 { ((wave - 2) / 3) as usize } else { 0 };
-    (grunts, spheroids, tanks)
+    let enforcers = if wave >= 4 { ((wave - 3) / 2) as usize } else { 0 };
+    let phantoms  = if wave >= 5 { ((wave - 4) / 3) as usize } else { 0 };
+    let bombers   = if wave >= 6 { ((wave - 5) / 4) as usize } else { 0 };
+    [grunts, spheroids, tanks, enforcers, phantoms, bombers]
 }
 
 fn spawn_wave(enemies: &mut Vec<Enemy>, wave: u32, player_pos: Vec2) {
-    let (g, s, t) = wave_enemies(wave);
+    let counts = wave_enemies(wave);
+    let ctors: [fn(Vec2) -> Enemy; 6] = [
+        Enemy::new_grunt, Enemy::new_spheroid, Enemy::new_tank,
+        Enemy::new_enforcer, Enemy::new_phantom, Enemy::new_bomber,
+    ];
     let safe_sq = 120.0f32 * 120.0;
 
     let mut try_add = |mk: fn(Vec2) -> Enemy| {
@@ -458,9 +603,9 @@ fn spawn_wave(enemies: &mut Vec<Enemy>, wave: u32, player_pos: Vec2) {
         enemies.push(mk(random_edge_pos()));
     };
 
-    for _ in 0..g { try_add(Enemy::new_grunt); }
-    for _ in 0..s { try_add(Enemy::new_spheroid); }
-    for _ in 0..t { try_add(Enemy::new_tank); }
+    for (n, mk) in counts.iter().zip(ctors.iter()) {
+        for _ in 0..*n { try_add(*mk); }
+    }
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
@@ -678,7 +823,7 @@ impl Game {
         let wave = self.wave;
 
         for e in &mut self.enemies {
-            if let Some(fire_dir) = e.update(player_pos, dt, wave) {
+            for fire_dir in e.update(player_pos, dt, wave) {
                 new_bullets.push(Bullet::new(e.pos, fire_dir, false));
             }
             if e.kind == EnemyKind::Spheroid && e.spawn_timer <= 0.0 {
