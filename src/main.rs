@@ -536,7 +536,7 @@ impl Leaderboard {
 // ── Game ──────────────────────────────────────────────────────────────────────
 
 #[derive(PartialEq)]
-enum Screen { Menu, Playing, GameOver, EnterInitials, Leaderboard }
+enum Screen { Menu, Playing, EnterInitials, Leaderboard }
 
 struct Game {
     screen: Screen,
@@ -618,20 +618,6 @@ impl Game {
                 if confirm { self.start(); }
             }
             Screen::Playing => self.update_game(dt, gp),
-            Screen::GameOver => {
-                for p in &mut self.particles { p.update(dt); }
-                self.particles.retain(|p| p.lifetime > 0.0);
-                if confirm {
-                    if self.leaderboard.qualifies(self.score) {
-                        self.initials_input.clear();
-                        self.new_entry_rank = None;
-                        self.screen = Screen::EnterInitials;
-                    } else {
-                        self.new_entry_rank = None;
-                        self.screen = Screen::Leaderboard;
-                    }
-                }
-            }
             Screen::EnterInitials => {
                 for p in &mut self.particles { p.update(dt); }
                 self.particles.retain(|p| p.lifetime > 0.0);
@@ -770,7 +756,14 @@ impl Game {
         self.player.invincible_timer = INVINCIBLE_TIME;
         self.player.lives -= 1;
         if self.player.lives <= 0 {
-            self.screen = Screen::GameOver;
+            if self.leaderboard.qualifies(self.score) {
+                self.initials_input.clear();
+                self.new_entry_rank = None;
+                self.screen = Screen::EnterInitials;
+            } else {
+                self.new_entry_rank = None;
+                self.screen = Screen::Leaderboard;
+            }
         }
     }
 
@@ -783,7 +776,6 @@ impl Game {
                 self.draw_menu();
             },
             Screen::Playing      => self.draw_game(),
-            Screen::GameOver     => self.draw_gameover(),
             Screen::EnterInitials => self.draw_enter_initials(),
             Screen::Leaderboard  => self.draw_leaderboard(),
         }
@@ -917,35 +909,6 @@ impl Game {
                   Color::new(0.5, 0.5, 0.5, 1.0));
     }
 
-    fn draw_gameover(&self) {
-        self.draw_arena();
-        for p in &self.particles { p.draw(); }
-
-        let cx = screen_width() * 0.5;
-        let cy = screen_height() * 0.5;
-
-        let title = "GAME OVER";
-        let tw = measure_text(title, None, 72, 1.0).width;
-        draw_text(title, cx - tw * 0.5, cy - 55.0, 72.0, RED);
-
-        let score_str = format!("SCORE: {:06}", self.score);
-        let sw = measure_text(&score_str, None, 36, 1.0).width;
-        draw_text(&score_str, cx - sw * 0.5, cy, 36.0, WHITE);
-
-        let sub = if self.leaderboard.qualifies(self.score) {
-            let rank = self.leaderboard.rank_of(self.score) + 1;
-            format!("RANK #{} — ENTER YOUR INITIALS", rank)
-        } else {
-            "PRESS ENTER TO SEE HIGH SCORES".into()
-        };
-        let subw = measure_text(&sub, None, 20, 1.0).width;
-        draw_text(&sub, cx - subw * 0.5, cy + 38.0, 20.0, YELLOW);
-
-        let prompt = "PRESS ENTER OR SPACE TO CONTINUE";
-        let pw = measure_text(prompt, None, 20, 1.0).width;
-        draw_text(prompt, cx - pw * 0.5, cy + 80.0, 20.0, GRAY);
-    }
-
     fn draw_enter_initials(&self) {
         self.draw_arena();
         for p in &self.particles { p.draw(); }
@@ -954,10 +917,14 @@ impl Game {
         let cy = screen_height() * 0.5;
         let rank = self.leaderboard.rank_of(self.score) + 1;
 
+        let go = "GAME OVER";
+        let gw = measure_text(go, None, 60, 1.0).width;
+        draw_text(go, cx - gw * 0.5, cy - 150.0, 60.0, RED);
+
         if rank == 1 {
             let t = "NEW HIGH SCORE!";
-            let tw = measure_text(t, None, 36, 1.0).width;
-            draw_text(t, cx - tw * 0.5, cy - 120.0, 36.0, YELLOW);
+            let tw = measure_text(t, None, 32, 1.0).width;
+            draw_text(t, cx - tw * 0.5, cy - 110.0, 32.0, YELLOW);
         }
 
         let rt = format!("RANK #{}", rank);
@@ -1013,16 +980,20 @@ impl Game {
         let cx = screen_width() * 0.5;
         let m = ARENA_MARGIN;
 
+        let go = "GAME OVER";
+        let gw = measure_text(go, None, 40, 1.0).width;
+        draw_text(go, cx - gw * 0.5, m + 36.0, 40.0, RED);
+
         let title = "HIGH SCORES";
-        let tw = measure_text(title, None, 40, 1.0).width;
-        draw_text(title, cx - tw * 0.5, m + 36.0, 40.0, YELLOW);
+        let tw = measure_text(title, None, 32, 1.0).width;
+        draw_text(title, cx - tw * 0.5, m + 70.0, 32.0, YELLOW);
 
         let st = format!("YOUR SCORE: {:06}", self.score);
         let sw = measure_text(&st, None, 20, 1.0).width;
-        draw_text(&st, cx - sw * 0.5, m + 66.0, 20.0, WHITE);
+        draw_text(&st, cx - sw * 0.5, m + 96.0, 20.0, WHITE);
 
         // Entries — three columns: rank, initials, score
-        let entry_y0 = m + 100.0;
+        let entry_y0 = m + 120.0;
         let spacing  = (screen_height() - m - 50.0 - entry_y0) / 10.0;
 
         for (i, entry) in self.leaderboard.entries.iter().enumerate() {
