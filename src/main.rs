@@ -548,9 +548,10 @@ struct Game {
     wave: u32,
     wave_banner_timer: f32,
     next_wave_timer: f32,
-    // title screen
+    // title screen / attract mode
     stars: Vec<Star>,
     ship_angle: f32,
+    attract_timer: f32,  // 0-30 = title, 30-45 = scores, resets at 45
     // leaderboard
     leaderboard: Leaderboard,
     initials_input: String,
@@ -571,6 +572,7 @@ impl Game {
             next_wave_timer: 0.0,
             stars: Vec::new(),
             ship_angle: 0.0,
+            attract_timer: 0.0,
             leaderboard: Leaderboard::load(),
             initials_input: String::new(),
             new_entry_rank: None,
@@ -604,6 +606,8 @@ impl Game {
             }
         }
         self.ship_angle += dt * 0.75;
+        self.attract_timer += dt;
+        if self.attract_timer >= 45.0 { self.attract_timer = 0.0; }
     }
 
     fn update(&mut self, dt: f32, gp: &GamepadState) {
@@ -636,7 +640,11 @@ impl Game {
             Screen::Leaderboard => {
                 for p in &mut self.particles { p.update(dt); }
                 self.particles.retain(|p| p.lifetime > 0.0);
-                if confirm { self.screen = Screen::Menu; }
+                if confirm {
+                    self.attract_timer = 0.0; // restart attract cycle
+                    self.new_entry_rank = None;
+                    self.screen = Screen::Menu;
+                }
             }
         }
     }
@@ -769,7 +777,11 @@ impl Game {
     fn draw(&self) {
         clear_background(BLACK);
         match self.screen {
-            Screen::Menu         => self.draw_menu(),
+            Screen::Menu => if self.attract_timer >= 30.0 {
+                self.draw_attract_leaderboard();
+            } else {
+                self.draw_menu();
+            },
             Screen::Playing      => self.draw_game(),
             Screen::GameOver     => self.draw_gameover(),
             Screen::EnterInitials => self.draw_enter_initials(),
@@ -865,6 +877,44 @@ impl Game {
         let hs = format!("TOP SCORE: {:06}", self.leaderboard.top_score());
         let hw = measure_text(&hs, None, 20, 1.0).width;
         draw_text(&hs, cx - hw * 0.5, cy + 142.0, 20.0, WHITE);
+    }
+
+    fn draw_attract_leaderboard(&self) {
+        // Stars still scroll in the background
+        for star in &self.stars {
+            let b = star.brightness;
+            draw_circle(star.x, star.y, star.radius, Color::new(b * 0.85, b * 0.92, b, 1.0));
+        }
+        self.draw_arena();
+
+        let cx  = screen_width()  * 0.5;
+        let m   = ARENA_MARGIN;
+
+        let title = "HIGH SCORES";
+        let tw = measure_text(title, None, 48, 1.0).width;
+        draw_text(title, cx - tw * 0.5, m + 42.0, 48.0, YELLOW);
+
+        let entry_y0 = m + 88.0;
+        let spacing  = (screen_height() - m - 50.0 - entry_y0) / 10.0;
+
+        for (i, entry) in self.leaderboard.entries.iter().enumerate() {
+            let y = entry_y0 + i as f32 * spacing;
+            let color = if i == 0 { WHITE } else { GRAY };
+
+            let rank_str = format!("{}.", i + 1);
+            let rw = measure_text(&rank_str, None, 20, 1.0).width;
+            draw_text(&rank_str, cx - 120.0 - rw, y, 20.0, color);
+            draw_text(&entry.initials, cx - 100.0, y, 20.0, color);
+            let score_str = format!("{:06}", entry.score);
+            let ssw = measure_text(&score_str, None, 20, 1.0).width;
+            draw_text(&score_str, cx + 80.0 - ssw * 0.5, y, 20.0, color);
+        }
+
+        let secs_left = (45.0 - self.attract_timer).ceil() as i32;
+        let prompt = format!("PRESS ENTER TO PLAY  ({})", secs_left);
+        let pw = measure_text(&prompt, None, 20, 1.0).width;
+        draw_text(&prompt, cx - pw * 0.5, screen_height() - m - 8.0, 20.0,
+                  Color::new(0.5, 0.5, 0.5, 1.0));
     }
 
     fn draw_gameover(&self) {
