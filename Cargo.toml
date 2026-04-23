@@ -10,3 +10,4 @@ path = "src/main.rs"
 [dependencies]
 macroquad = "0.4"
 gilrs = "0.10"
+rodio = { version = "0.17", default-features = false }

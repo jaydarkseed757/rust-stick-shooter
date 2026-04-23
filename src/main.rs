@@ -2,6 +2,9 @@ use macroquad::prelude::*;
 use macroquad::rand::gen_range;
 use gilrs::{Axis, Button, EventType, Gilrs};
 
+mod sound;
+use sound::{SoundSystem, Sfx};
+
 const PLAYER_SPEED: f32 = 220.0;
 const PLAYER_RADIUS: f32 = 10.0;
 const BULLET_SPEED: f32 = 450.0;
@@ -301,6 +304,7 @@ impl Enemy {
             EnemyKind::Bomber => Color::new(0.85, 0.65, 0.05, 1.0),
         }
     }
+    fn is_big(&self) -> bool { !matches!(self.kind, EnemyKind::Grunt) }
 
     // Returns fire directions for bullets to spawn this frame (empty = no shot).
     fn update(&mut self, player_pos: Vec2, dt: f32, wave: u32) -> Vec<Vec2> {
@@ -701,6 +705,8 @@ struct Game {
     leaderboard: Leaderboard,
     initials_input: String,
     new_entry_rank: Option<usize>,
+    // audio
+    sound: Option<SoundSystem>,
 }
 
 impl Game {
@@ -721,7 +727,12 @@ impl Game {
             leaderboard: Leaderboard::load(),
             initials_input: String::new(),
             new_entry_rank: None,
+            sound: SoundSystem::new(),
         }
+    }
+
+    fn play_sfx(&self, sfx: Sfx) {
+        if let Some(s) = &self.sound { s.play(sfx); }
     }
 
     fn start(&mut self) {
@@ -808,6 +819,7 @@ impl Game {
             self.next_wave_timer -= dt;
             if self.next_wave_timer <= 0.0 {
                 spawn_wave(&mut self.enemies, self.wave, self.player.pos);
+                self.play_sfx(Sfx::WaveStart);
             }
         }
         if self.wave_banner_timer > 0.0 { self.wave_banner_timer -= dt; }
@@ -819,6 +831,7 @@ impl Game {
             if let Some(dir) = self.player.shoot_dir(gp) {
                 self.bullets.push(Bullet::new(self.player.pos, dir, true));
                 self.player.shoot_cooldown = SHOOT_COOLDOWN;
+                self.play_sfx(Sfx::Shoot);
             }
         }
 
@@ -845,7 +858,7 @@ impl Game {
         self.particles.retain(|p| p.lifetime > 0.0);
 
         // Collision: player bullets vs enemies
-        struct Kill { pos: Vec2, color: Color, score: u32 }
+        struct Kill { pos: Vec2, color: Color, score: u32, big: bool }
         let mut kills: Vec<Kill> = Vec::new();
 
         'outer: for b in &mut self.bullets {
@@ -857,7 +870,8 @@ impl Game {
                     e.health -= 1;
                     if e.health <= 0 {
                         e.dead = true;
-                        kills.push(Kill { pos: e.pos, color: e.particle_color(), score: e.score_value() });
+                        kills.push(Kill { pos: e.pos, color: e.particle_color(),
+                                          score: e.score_value(), big: e.is_big() });
                     }
                     continue 'outer;
                 }
@@ -866,6 +880,7 @@ impl Game {
         for k in kills {
             self.score += k.score;
             spawn_particles(&mut self.particles, k.pos, k.color, 10);
+            if k.big { self.play_sfx(Sfx::KillBig); } else { self.play_sfx(Sfx::KillSmall); }
         }
 
         // Collision: enemy bullets / contact vs player
@@ -899,6 +914,7 @@ impl Game {
             self.wave += 1;
             self.wave_banner_timer = 2.5;
             self.next_wave_timer = 2.5;
+            self.play_sfx(Sfx::WaveClear);
         }
     }
 
@@ -907,6 +923,7 @@ impl Game {
         self.player.invincible_timer = INVINCIBLE_TIME;
         self.player.lives -= 1;
         if self.player.lives <= 0 {
+            self.play_sfx(Sfx::GameOver);
             if self.leaderboard.qualifies(self.score) {
                 self.initials_input.clear();
                 self.new_entry_rank = None;
@@ -915,6 +932,8 @@ impl Game {
                 self.new_entry_rank = None;
                 self.screen = Screen::Leaderboard;
             }
+        } else {
+            self.play_sfx(Sfx::PlayerHit);
         }
     }
 
