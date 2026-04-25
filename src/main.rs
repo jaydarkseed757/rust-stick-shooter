@@ -8,6 +8,7 @@ use sound::{SoundSystem, Sfx};
 const PLAYER_SPEED: f32 = 220.0;
 const PLAYER_RADIUS: f32 = 10.0;
 const BULLET_SPEED: f32 = 450.0;
+const BULLET_RADIUS: f32 = 4.0;
 const BULLET_LIFETIME: f32 = 1.5;
 const SHOOT_COOLDOWN: f32 = 0.1;
 const INVINCIBLE_TIME: f32 = 2.5;
@@ -94,8 +95,10 @@ fn draw_3d_ship(scr_cx: f32, scr_cy: f32, angle: f32) {
         vec2(scr_cx + x * s, scr_cy + y * s)
     };
 
-    let t: Vec<(f32, f32, f32)> = verts.iter().map(|&v| transform(v)).collect();
-    let p: Vec<Vec2>             = t.iter()   .map(|&v| project(v))  .collect();
+    let mut t = [(0.0f32, 0.0f32, 0.0f32); 8];
+    for (i, &v) in verts.iter().enumerate() { t[i] = transform(v); }
+    let mut p = [Vec2::ZERO; 8];
+    for (i, &v) in t.iter().enumerate() { p[i] = project(v); }
 
     // Wide glow pass first, then crisp edges on top.
     for &(a, b) in &edges {
@@ -306,8 +309,8 @@ impl Enemy {
     }
     fn is_big(&self) -> bool { !matches!(self.kind, EnemyKind::Grunt) }
 
-    // Returns fire directions for bullets to spawn this frame (empty = no shot).
-    fn update(&mut self, player_pos: Vec2, dt: f32, wave: u32) -> Vec<Vec2> {
+    // Pushes any bullets fired this frame directly into `out`; no heap allocation.
+    fn update(&mut self, player_pos: Vec2, dt: f32, wave: u32, out: &mut Vec<Bullet>) {
         match self.kind {
             EnemyKind::Grunt => {
                 let dir = (player_pos - self.pos).normalize_or_zero();
@@ -334,19 +337,19 @@ impl Enemy {
                     let m = ARENA_MARGIN + self.radius();
                     self.pos.x = self.pos.x.clamp(m, screen_width() - m);
                     self.pos.y = self.pos.y.clamp(m, screen_height() - m);
-                    return vec![dir];
+                    out.push(Bullet::new(self.pos, dir, false));
+                    return;
                 }
             }
             EnemyKind::Enforcer => {
-                // Fast diagonal bouncer; fires 3-way spread toward player
                 self.angle += dt * 4.0;
                 self.shoot_timer -= dt;
                 if self.shoot_timer <= 0.0 {
                     self.shoot_timer = (1.8 - wave as f32 * 0.07).max(0.55);
                     let dir = (player_pos - self.pos).normalize_or_zero();
                     let base = dir.y.atan2(dir.x);
-                    let sp = 0.35; // ~20° spread
-                    let shots = vec![
+                    let sp = 0.35;
+                    let shots = [
                         vec2((base - sp).cos(), (base - sp).sin()),
                         dir,
                         vec2((base + sp).cos(), (base + sp).sin()),
@@ -357,11 +360,11 @@ impl Enemy {
                     if self.pos.x >= screen_width() - m { self.pos.x = screen_width() - m; self.vel.x = -self.vel.x.abs(); }
                     if self.pos.y <= m { self.pos.y = m; self.vel.y = self.vel.y.abs(); }
                     if self.pos.y >= screen_height() - m { self.pos.y = screen_height() - m; self.vel.y = -self.vel.y.abs(); }
-                    return shots;
+                    for d in shots { out.push(Bullet::new(self.pos, d, false)); }
+                    return;
                 }
             }
             EnemyKind::Phantom => {
-                // Drifts slowly toward player; teleports periodically and fires a cardinal burst
                 let dir = (player_pos - self.pos).normalize_or_zero();
                 self.vel = dir * 30.0;
                 self.angle += dt * 2.2;
@@ -378,29 +381,28 @@ impl Enemy {
                             break;
                         }
                     }
-                    return vec![
-                        vec2(1.0, 0.0), vec2(-1.0, 0.0),
-                        vec2(0.0, 1.0), vec2(0.0, -1.0),
-                    ];
+                    for d in [vec2(1.0,0.0), vec2(-1.0,0.0), vec2(0.0,1.0), vec2(0.0,-1.0)] {
+                        out.push(Bullet::new(self.pos, d, false));
+                    }
+                    return;
                 }
             }
             EnemyKind::Bomber => {
-                // Very slow; fires 8-way radial burst on a long cooldown
                 let dir = (player_pos - self.pos).normalize_or_zero();
                 self.vel = dir * 26.0;
                 self.angle += dt * 1.5;
                 self.shoot_timer -= dt;
                 if self.shoot_timer <= 0.0 {
                     self.shoot_timer = (3.0 - wave as f32 * 0.09).max(1.0);
-                    let shots: Vec<Vec2> = (0..8).map(|i| {
-                        let a = i as f32 * std::f32::consts::TAU / 8.0;
-                        vec2(a.cos(), a.sin())
-                    }).collect();
                     self.pos += self.vel * dt;
                     let m = ARENA_MARGIN + self.radius();
                     self.pos.x = self.pos.x.clamp(m, screen_width() - m);
                     self.pos.y = self.pos.y.clamp(m, screen_height() - m);
-                    return shots;
+                    for i in 0..8u32 {
+                        let a = i as f32 * std::f32::consts::TAU / 8.0;
+                        out.push(Bullet::new(self.pos, vec2(a.cos(), a.sin()), false));
+                    }
+                    return;
                 }
             }
         }
@@ -417,7 +419,6 @@ impl Enemy {
             self.pos.x = self.pos.x.clamp(m, screen_width() - m);
             self.pos.y = self.pos.y.clamp(m, screen_height() - m);
         }
-        vec![]
     }
 
     fn draw(&self) {
@@ -579,12 +580,13 @@ impl Particle {
 // ── Wave config ───────────────────────────────────────────────────────────────
 
 fn wave_enemies(wave: u32) -> [usize; 6] {
+    // Each formula yields ≥ 1 on the named wave and grows from there.
     let grunts    = (4 + wave * 3) as usize;
-    let spheroids = if wave >= 2 { ((wave - 1) / 2) as usize } else { 0 };
-    let tanks     = if wave >= 3 { ((wave - 2) / 3) as usize } else { 0 };
-    let enforcers = if wave >= 4 { ((wave - 3) / 2) as usize } else { 0 };
-    let phantoms  = if wave >= 5 { ((wave - 4) / 3) as usize } else { 0 };
-    let bombers   = if wave >= 6 { ((wave - 5) / 4) as usize } else { 0 };
+    let spheroids = if wave >= 2 { 1 + (wave - 2) as usize / 2 } else { 0 };
+    let tanks     = if wave >= 3 { 1 + (wave - 3) as usize / 3 } else { 0 };
+    let enforcers = if wave >= 4 { 1 + (wave - 4) as usize / 2 } else { 0 };
+    let phantoms  = if wave >= 5 { 1 + (wave - 5) as usize / 3 } else { 0 };
+    let bombers   = if wave >= 6 { 1 + (wave - 6) as usize / 4 } else { 0 };
     [grunts, spheroids, tanks, enforcers, phantoms, bombers]
 }
 
@@ -842,9 +844,7 @@ impl Game {
         let wave = self.wave;
 
         for e in &mut self.enemies {
-            for fire_dir in e.update(player_pos, dt, wave) {
-                new_bullets.push(Bullet::new(e.pos, fire_dir, false));
-            }
+            e.update(player_pos, dt, wave, &mut new_bullets);
             if e.kind == EnemyKind::Spheroid && e.spawn_timer <= 0.0 {
                 e.spawn_timer = 4.0;
                 grunt_spawn_positions.push(e.pos);
@@ -865,7 +865,7 @@ impl Game {
             if !b.from_player || b.dead { continue; }
             for e in &mut self.enemies {
                 if e.dead { continue; }
-                if circles_overlap(b.pos, 4.0, e.pos, e.radius()) {
+                if circles_overlap(b.pos, BULLET_RADIUS, e.pos, e.radius()) {
                     b.dead = true;
                     e.health -= 1;
                     if e.health <= 0 {
@@ -888,7 +888,7 @@ impl Game {
         if self.player.invincible_timer <= 0.0 {
             for b in &mut self.bullets {
                 if b.from_player || b.dead { continue; }
-                if circles_overlap(b.pos, 4.0, self.player.pos, PLAYER_RADIUS) {
+                if circles_overlap(b.pos, BULLET_RADIUS, self.player.pos, PLAYER_RADIUS) {
                     b.dead = true;
                     hit = true;
                     break;
