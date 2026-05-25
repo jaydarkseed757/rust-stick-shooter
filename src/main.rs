@@ -746,6 +746,8 @@ impl Game {
         self.wave = 1;
         self.wave_banner_timer = 2.0;
         self.next_wave_timer = 2.0;
+        self.initials_input.clear();
+        self.new_entry_rank = None;
         self.screen = Screen::Playing;
     }
 
@@ -792,7 +794,7 @@ impl Game {
                 }
             }
             Screen::Credits => {
-                if confirm || is_key_pressed(KeyCode::Escape) || gp.confirm {
+                if confirm || is_key_pressed(KeyCode::Escape) {
                     self.screen = Screen::Menu;
                 }
             }
@@ -909,8 +911,11 @@ impl Game {
         self.bullets.retain(|b| !b.dead);
         self.enemies.retain(|e| !e.dead);
 
-        // Advance wave when arena is cleared
-        if self.enemies.is_empty() && self.next_wave_timer <= 0.0 {
+        // Advance wave when arena is cleared — only while still playing
+        if self.screen == Screen::Playing
+            && self.enemies.is_empty()
+            && self.next_wave_timer <= 0.0
+        {
             self.wave += 1;
             self.wave_banner_timer = 2.5;
             self.next_wave_timer = 2.5;
